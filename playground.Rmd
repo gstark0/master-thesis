@@ -1,0 +1,110 @@
+---
+title: "R Notebook"
+output: pdf_notebook
+---
+
+
+```{r}
+library(lavaan)
+source("src/sem_utils.R")
+source("src/objective_functions.R")
+source("src/data_generation.R")
+set.seed(123)
+```
+
+```{r}
+# Complex model structure + MSE objctive -> Optimized model works better
+# Complex model structure + Likelihood objctive -> Lavaan model works better
+
+# Simple model structure + MSE objctive -> Optimized model works better
+# Complex model structure + Likelihood objctive -> Lavaan model works better
+
+# Define the SEM model
+model <- '
+    # Measurement model
+    latent1 =~ 1*x1 + x2 + x3
+    latent2 =~ 1*x2 + x3 + 0.5*x1
+
+    # Structural paths
+    latent2 ~ latent1
+
+    # Outcome prediction
+    x4 ~ latent1 + latent2
+
+    # Mean structure
+    x1 ~ 1
+    x2 ~ 1
+    x3 ~ 1
+    x4 ~ 1
+'
+
+
+# Define variable indices for predictors and outcome
+x_names <- c(1, 2, 3)
+y_names <- c(4)
+
+# Generate synthetic data
+data <- generate_sem_advantage_data(n = 100)
+
+# Create a lavaan model object without fitting
+zero_fit <- sem(model, data = data, do.fit = FALSE)
+
+# Extract initial free parameters
+free_params <- parTable(zero_fit)$est[parTable(zero_fit)$free > 0]
+
+# Optimize the model using maximum likelihood
+opt_result <- optim(
+    par = free_params,
+    fn = likelihood_sem,
+    fit = zero_fit,
+    data = data,
+    x_names = x_names,
+    y_names = y_names,
+    method = "Nelder-Mead",
+)
+```
+
+```{r}
+# Models
+optimized_fit <- get_new_fit(opt_result$par, zero_fit)
+lavaan_fit <- sem(model, data = data)
+lm_model <- lm(x4 ~ x1 + x2 + x3, data = data)
+
+# Compare MSE on test data
+test_data = generate_sem_advantage_data(n = 1000)
+mse_lm <- calculate_mse(
+    predict(lm_model, test_data),
+    test_data$x4
+)
+mse_lavaan <- mse_sem(
+    lavaan_fit,
+    test_data,
+    x_names,
+    y_names
+)
+mse_optimized <- mse_sem(
+    optimized_fit,
+    test_data,
+    x_names,
+    y_names
+)
+
+lm_mse_lavaan <- calculate_mse(
+    predict_lm(lavaan_fit, test_data, x_names, y_names),
+    test_data$x4
+)
+lm_mse_optimized <- calculate_mse(
+    predict_lm(optimized_fit, test_data, x_names, y_names),
+    test_data$x4
+)
+
+# print in a table
+print(
+    matrix(
+        c(mse_lm, mse_lavaan, mse_optimized, lm_mse_lavaan, lm_mse_optimized),
+        nrow = 1,
+        dimnames = list(NULL, c("LM", "Lavaan", "Optimized", "LM Lavaan", "LM Optimized"))
+    )
+)
+
+```
