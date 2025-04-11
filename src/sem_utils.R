@@ -16,6 +16,14 @@ get_new_fit <- function(new_params, fit) {
 
     # Update the internal model parameters
     updated_fit@Model <- lavaan:::lav_model_set_parameters(updated_fit@Model, new_params)
+    
+    # Ensure implied matrices are updated
+    tryCatch({
+        implied <- lavaan:::lav_model_implied(updated_fit@Model)
+        updated_fit@implied <- implied
+    }, error = function(e) {
+        # If the implied calculation fails, just return the model with updated parameters
+    })
 
     return(updated_fit)
 }
@@ -36,57 +44,35 @@ predict_sem <- function(fit, data, x_names, y_names) {
     mu_X <- implied_values$mean[[1]][x_names]  
     mu_Y <- implied_values$mean[[1]][y_names]
 
-    centered_X <- sweep(data[x_names], 2, mu_X)
+    centered_X <- as.matrix(sweep(data[x_names], 2, mu_X))
 
-    predictions = t(mu_Y + S_YX_S_XX_inv %*% t(centered_X))
-    return(predictions)
-}
-
-# Predict outcomes (Y) based on predictors (X) using SEM model parameters using full model power
-predict_sem_nonlinear <- function(fit, data, x_names, y_names) {
-    # Get latent variable scores
-    latent_scores <- lavPredict(fit, newdata = data)
-    
-    # Get parameters for latent to outcome paths
-    params <- parameterEstimates(fit)
-    latent1_coef <- params$est[params$lhs == "x4" & params$op == "~" & params$rhs == "latent1"]
-    latent2_coef <- params$est[params$lhs == "x4" & params$op == "~" & params$rhs == "latent2"]
-    
-    # Non-linear prediction (matching your data generation)
-    predictions <- latent1_coef * latent_scores[, "latent1"] + 
-                   latent2_coef * latent_scores[, "latent2"]^2 - 
-                   0.5 * (latent_scores[, "latent1"] * latent_scores[, "latent2"])
+    # Transpose the centered_X before multiplication
+    predictions <- t(mu_Y + S_YX_S_XX_inv %*% t(centered_X))
     
     return(predictions)
 }
 
-# Predict like a linear model, but with SEM parameters
-predict_lm <- function(fit, data, x_names, y_names) {
-    # Get variable names
-    y_var <- colnames(data)[y_names[1]]
-    x_vars <- colnames(data)[x_names]
-
-    # Get parameters
-    params <- parameterEstimates(fit)
-
-    # Get intercept
-    intercept <- params$est[params$lhs == y_var & params$op == "~1"]
-    if(length(intercept) == 0) intercept <- 0
-
-    # Get coefficients
-    coeffs <- numeric(length(x_vars))
-    for(i in 1:length(x_vars)) {
-        idx <- which(params$lhs == y_var & params$op == "~" & params$rhs == x_vars[i])
-        if(length(idx) > 0) {
-            coeffs[i] <- params$est[idx]
-        }
-    }
-
-    # Calculate predictions
-    pred <- intercept
-    for(i in 1:length(x_vars)) {
-        pred <- pred + coeffs[i] * data[[x_vars[i]]]
-    }
-
-    return(pred)
+predicty.lavaan = function(object, newdata, xnames, ynames){
+  # predict function for computing predicted values for set of response variables
+  # given a set of predictor variables
+  # based on the joint distribution estimated by a SEM model
+  # INPUT
+  # object: lavaan output object obtained from sem()
+  # newdata: data frame with new values for the predictors
+  # xnames: variables designated as predictors
+  # ynames: variables designated as response variables
+  
+  #
+  Sxx = fitted(object)$cov[xnames , xnames]
+  Sxy = fitted(object)$cov[xnames , ynames]
+  mx = fitted(object)$mean[xnames]
+  my = fitted(object)$mean[ynames]
+  
+  #
+  Xtest = as.matrix(newdata[, xnames])
+  Xtest = scale(Xtest, center = mx, scale = FALSE)
+  yhat = matrix(my, nrow = nrow(Xtest), ncol = length(ynames), byrow = TRUE) + Xtest %*% solve(Sxx) %*% Sxy
+  
+  # return
+  return(yhat)
 }

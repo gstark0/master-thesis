@@ -5,7 +5,7 @@ library(mvtnorm)
 # Calculate mean squared error for SEM predictions
 mse_sem <- function(fit, data, x_names, y_names) {
     # Make predictions
-    predictions <- predict_sem_nonlinear(fit, data, x_names, y_names)
+    predictions <- predict_sem(fit, data, x_names, y_names)
 
     # Calculate MSE
     actual_Y <- data[, y_names, drop = FALSE][, 1]
@@ -32,6 +32,7 @@ likelihood_sem <- function(new_params, fit, data, x_names, y_names) {
     }
     #Sigma_XX_inv <- solve(Sigma_XX)  
     #Sigma_XX_inv <- solve(Sigma_XX + diag(1e-6, nrow(Sigma_XX)))
+
     Sigma_XX_inv <- solve(Sigma_XX + diag(1e-6, nrow(Sigma_XX)))
     S_YX_S_XX_inv <- Sigma_YX %*% Sigma_XX_inv  # Σ_YX * Σ_XX^(-1)
 
@@ -60,26 +61,24 @@ likelihood_sem <- function(new_params, fit, data, x_names, y_names) {
     return(-2 * minus2_log_likelihood)
 }
 
-mse_objective <- function(new_params, fit, data, x_names, y_names) {
-    updated_fit <- get_new_fit(new_params, fit)
-    predictions <- predict_lm(updated_fit, data, x_names, y_names)
-    return(mean((data$x4 - predictions)^2))
+likelihood_sem_regularized <- function(new_params, fit, data, x_names, y_names, lambda = 0.1) {
+    # Original likelihood calculation
+    likelihood <- likelihood_sem(new_params, fit, data, x_names, y_names)
+    
+    # Add L2 penalty
+    penalty <- lambda * sum(new_params^2)
+    
+    return(likelihood + penalty)
 }
 
-prediction_likelihood_sem <- function(new_params, fit, data, x_names, y_names) {
-    # Make a new model with new parameters
+mse_objective <- function(new_params, fit, data, x_names, y_names) {
     updated_fit <- get_new_fit(new_params, fit)
     
-    # Get predictions using SEM approach
-    predictions <- predict_sem(updated_fit, data, x_names, y_names)
+    # Convert numeric indices to column names
+    x_vars <- colnames(data)[x_names]
+    y_var <- colnames(data)[y_names]
     
-    # Calculate prediction-focused negative log-likelihood
-    pred_error <- data[, y_names, drop = FALSE][, 1] - predictions
-    n <- nrow(data)
+    predictions <- predicty.lavaan(updated_fit, data, x_vars, y_var)
     
-    # Minimize negative log-likelihood of prediction errors
-    sigma2 <- mean(pred_error^2)  # MLE of error variance
-    ll <- -n/2*log(2*pi*sigma2) - sum(pred_error^2)/(2*sigma2)
-    
-    return(-ll)  # Return negative log-likelihood
+    return(mean((data[[y_var]] - predictions)^2))
 }

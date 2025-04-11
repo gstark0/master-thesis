@@ -13,29 +13,20 @@ set.seed(123)
 ```
 
 ```{r}
+# @TODO Start writing intro/methods section
+# @TODO Think about simulation studies -> quick and dirty check on what works what doesn't as well
+
 # Complex model structure + MSE objctive -> Optimized model works better
 # Complex model structure + Likelihood objctive -> Lavaan model works better
 
 # Simple model structure + MSE objctive -> Optimized model works better
-# Complex model structure + Likelihood objctive -> Lavaan model works better
 
 # Define the SEM model
 model <- '
-    # Measurement model
-    latent1 =~ 1*x1 + x2 + x3
-    latent2 =~ 1*x2 + x3 + 0.5*x1
-
-    # Structural paths
-    latent2 ~ latent1
-
-    # Outcome prediction
-    x4 ~ latent1 + latent2
-
-    # Mean structure
     x1 ~ 1
     x2 ~ 1
     x3 ~ 1
-    x4 ~ 1
+    x4 ~ x1 + x2 + x3
 '
 
 
@@ -61,17 +52,86 @@ opt_result <- optim(
     x_names = x_names,
     y_names = y_names,
     method = "Nelder-Mead",
+    hessian = TRUE
+)
+opt_result2 <- optim(
+    par = free_params,
+    fn = prediction_likelihood_sem,
+    fit = zero_fit,
+    data = data,
+    x_names = x_names,
+    y_names = y_names,
+    method = "Nelder-Mead",
+    hessian = TRUE
 )
 ```
 
 ```{r}
+# ------------------ HESSIAN ------------------
+hessian_matrix <- opt_result$hessian
+eigen_results <- eigen(hessian_matrix)
+eigen_values <- eigen_results$values
+
+# Check if all eigenvalues are positive (positive definite)
+is_min <- all(eigen_values > 0)
+
+# Condition number
+cond_number <- max(eigen_values) / min(eigen_values)
+
+# Standard errors of parameters
+se <- try(sqrt(diag(solve(hessian_matrix))), silent = TRUE)
+if(inherits(se, "try-error")) {
+  se <- rep(NA, length(opt_result$par))
+  warning("Hessian is singular, standard errors cannot be calculated")
+}
+
+# Print results
+cat("Is a global minimum:", is_min, "\n")
+cat("Condition number:", cond_number, "\n")
+cat("Smallest eigenvalue:", min(eigen_values), "\n")
+cat("Largest eigenvalue:", max(eigen_values), "\n")
+
+# Parameter summary
+# param_summary <- data.frame(
+#   Parameter = 1:length(opt_result$par),
+#   Estimate = opt_result$par,
+#   StdError = se,
+#   CV = abs(se / opt_result$par)  # Coefficient of variation
+# )
+# print(param_summary)
+```
+
+```{r}
+x_names <- c(1, 2, 3)
+y_names <- c(4)
+#data <- generate_sem_data(100, "ideal")
+data <- generate_sem_advantage_data(n = 100)
+model <- '
+    x1 ~ 1
+    x2 ~ 1
+    x3 ~ 1
+    x4 ~ x1 + x2 + x3
+'
+
+zero_fit <- sem(model, data = data, do.fit = FALSE)
+free_params <- parTable(zero_fit)$est[parTable(zero_fit)$free > 0]
+opt_result <- optim(
+    par = free_params,
+    fn = likelihood_sem,
+    fit = zero_fit,
+    data = data,
+    x_names = x_names,
+    y_names = y_names,
+    method = "Nelder-Mead"
+)
+
 # Models
 optimized_fit <- get_new_fit(opt_result$par, zero_fit)
 lavaan_fit <- sem(model, data = data)
 lm_model <- lm(x4 ~ x1 + x2 + x3, data = data)
 
 # Compare MSE on test data
-test_data = generate_sem_advantage_data(n = 1000)
+test_data <- generate_sem_data(1000, "ideal")
 mse_lm <- calculate_mse(
     predict(lm_model, test_data),
     test_data$x4
@@ -98,13 +158,123 @@ lm_mse_optimized <- calculate_mse(
     test_data$x4
 )
 
+actual_Y <- data[, y_names, drop = FALSE][, 1]
+mse_lavaan_paper = mean((actual_Y - predicty.lavaan(lavaan_fit, test_data, c("x1", "x2", "x3"), c("x4")))^2)
+mse_optimized_paper = mean((actual_Y - predicty.lavaan(optimized_fit, test_data, c("x1", "x2", "x3"), c("x4")))^2)
+
 # print in a table
 print(
     matrix(
-        c(mse_lm, mse_lavaan, mse_optimized, lm_mse_lavaan, lm_mse_optimized),
+        c(mse_lm, mse_lavaan, mse_optimized, lm_mse_lavaan, lm_mse_optimized, mse_lavaan_paper, mse_optimized_paper),
         nrow = 1,
-        dimnames = list(NULL, c("LM", "Lavaan", "Optimized", "LM Lavaan", "LM Optimized"))
+        dimnames = list(NULL, c("LM", "Lavaan", "Optimized", "LM Lavaan", "LM Optimized", "mse_lavaan_paper", "mse_optimized_paper"))
     )
 )
+```
 
+```{r}
+get_model_specification <- function(scenario = "ideal") {
+  if (scenario == "ideal" || scenario == "skewed") {
+    return('
+      latent1 =~ x1 + x2 + x3
+      x4 ~ latent1
+    ')
+    
+  } else if (scenario == "misspecified") {
+    return('
+      latent1 =~ x1 + x2 + x3
+      latent2 =~ x4
+      latent2 ~ latent1
+      x4 ~ x1  # direct effect added
+    ')
+    
+  } else if (scenario == "regression") {
+    return('
+      x4 ~ x1 + x2 + x3
+    ')
+    
+  } else {
+    stop("Unknown scenario.")
+  }
+}
+
+test_prediction_methods <- function(
+  data_generator = generate_sem_data,
+  scenario = "ideal",
+  n_train = 500,
+  n_test = 1000,
+  lavaan_model_string,
+  x_names = c(1, 2, 3),
+  y_names = c(4)
+) {
+  # --- TRAINING ---
+  train_data <- data_generator(n_train, scenario)
+
+  # 1. Fit vanilla SEM (ML-based)
+  lavaan_fit <- sem(lavaan_model_string, data = train_data, meanstructure = TRUE)
+
+  # 2. Fit baseline linear model
+  formula_lm <- as.formula(paste(colnames(train_data)[y_names], "~", paste(colnames(train_data)[x_names], collapse = " + ")))
+  lm_model <- lm(formula_lm, data = train_data)
+
+  # 3. Fit optimized SEM (your custom method)
+  zero_fit <- sem(lavaan_model_string, data = train_data, do.fit = FALSE)
+  free_params <- parTable(zero_fit)$est[parTable(zero_fit)$free > 0]
+  opt_result <- optim(
+    par = free_params,
+    fn = likelihood_sem,
+    fit = zero_fit,
+    data = train_data,
+    x_names = x_names,
+    y_names = y_names,
+    method = "BFGS"
+  )
+  optimized_fit <- get_new_fit(opt_result$par, zero_fit)
+
+  # --- TESTING ---
+  test_data <- data_generator(n_test, scenario)
+
+  # 4. Compute MSEs
+  mse_lavaan <- mse_sem(lavaan_fit, test_data, x_names, y_names)
+  mse_optimized <- mse_sem(optimized_fit, test_data, x_names, y_names)
+
+  lm_mse_lavaan <- calculate_mse(
+    predict_lm(lavaan_fit, test_data, x_names, y_names),
+    test_data[[y_names]]
+  )
+  lm_mse_optimized <- calculate_mse(
+    predict_lm(optimized_fit, test_data, x_names, y_names),
+    test_data[[y_names]]
+  )
+
+  mse_lm <- calculate_mse(
+    predict(lm_model, test_data),
+    test_data[[y_names]]
+  )
+
+  # --- RESULTS ---
+  results <- matrix(
+    c(mse_lm, mse_lavaan, mse_optimized, lm_mse_lavaan, lm_mse_optimized),
+    nrow = 1,
+    dimnames = list(
+      NULL,
+      c("LM", "Lavaan (ML)", "SEM (Optimized)", "LM from Lavaan", "LM from Optimized")
+    )
+  )
+
+  print(results)
+  return(invisible(results))
+}
+
+model_string <- get_model_specification("ideal")
+
+test_prediction_methods(
+  data_generator = generate_sem_data,
+  scenario = "ideal",
+  n_train = 500,
+  n_test = 1000,
+  lavaan_model_string = model_string,
+  x_names = c(1, 2, 3),
+  y_names = c(4)
+)
 ```
